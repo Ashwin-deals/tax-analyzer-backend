@@ -1,0 +1,28 @@
+{
+  "statementId": "d398beb5a50b4082bd195dd5f773ca8a",
+  "filename": "sample_statement1.xlsx",
+  "storedPath": "/Users/ashwin/Documents/tax-analyzer/backend/data/input/uploads/d398beb5a50b4082bd195dd5f773ca8a.xlsx",
+  "status": "analyzed",
+  "uploadedAt": "2026-05-12T11:16:38.872548+00:00",
+  "analyzedAt": "2026-05-12T11:16:39.191693+00:00",
+  "summary": {
+    "totalTransactions": 122,
+    "categoryCounts": {
+      "GST": 14,
+      "POSSIBLE_GST": 1,
+      "TDS": 0,
+      "NORMAL": 107
+    },
+    "confidenceCounts": {
+      "HIGH": 100,
+      "LOW": 21,
+      "MEDIUM": 1
+    },
+    "reviewTotal": 22,
+    "amountTotals": {
+      "debit": 6580992.33,
+      "credit": 6785947.0,
+      "deposit": 6785947.0
+    }
+  }
+}
