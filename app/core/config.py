@@ -22,6 +22,7 @@ class Settings:
     upload_dir: Path = Path(os.getenv("UPLOAD_DIR", BACKEND_ROOT / "data" / "input" / "uploads"))
     analysis_dir: Path = Path(os.getenv("ANALYSIS_DIR", BACKEND_ROOT / "data" / "output" / "api"))
     export_dir: Path = Path(os.getenv("EXPORT_DIR", BACKEND_ROOT / "data" / "output" / "exports"))
+    frontend_dist: Path = Path(os.getenv("FRONTEND_DIST", BACKEND_ROOT / "dist"))
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "50"))
 
     def __post_init__(self):

@@ -22,13 +22,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.staticfiles import StaticFiles
+
 app.include_router(router)
 
 
-@app.get("/")
-def root() -> dict:
-    return {
-        "name": settings.app_name,
-        "environment": settings.environment,
-        "docs": "/docs",
-    }
+if settings.frontend_dist.exists() and settings.frontend_dist.is_dir():
+    app.mount("/", StaticFiles(directory=settings.frontend_dist, html=True), name="frontend")
+else:
+    @app.get("/")
+    def root() -> dict:
+        return {
+            "name": settings.app_name,
+            "environment": settings.environment,
+            "docs": "/docs",
+            "frontend_status": f"Frontend build not found at '{settings.frontend_dist}'. Build frontend or set FRONTEND_DIST in .env.",
+        }
