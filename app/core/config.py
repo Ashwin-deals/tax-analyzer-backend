@@ -28,7 +28,7 @@ class Settings:
         object.__setattr__(
             self,
             "cors_origins",
-            _csv_env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"),
+            _csv_env("CORS_ORIGINS", "http://taxanalyzer.eopsys.com,http://taxanalyzer.eopsys.com"),
         )
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.analysis_dir.mkdir(parents=True, exist_ok=True)
