@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
 import json
 import re
 import shutil
+import threading
+import time
 import uuid
 import zipfile
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,8 +32,22 @@ from utils.constants import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class AnalysisError(Exception):
     """Raised when an uploaded statement cannot be processed."""
+
+
+@dataclass(frozen=True)
+class ExportArtifact:
+    path: Path
+    cleanup_paths: tuple[Path, ...]
+
+
+_PENDING_UPLOADS: dict[str, dict[str, Any]] = {}
+_ANALYSIS_CACHE: dict[str, dict[str, Any]] = {}
+_STORE_LOCK = threading.RLock()
 
 
 def _now() -> str:
@@ -40,23 +59,91 @@ def _safe_filename(filename: str) -> str:
     return re.sub(r"[^\w.\- ]", "_", name).strip() or "statement"
 
 
-def _metadata_path(statement_id: str) -> Path:
-    return settings.analysis_dir / statement_id / "metadata.json"
+def _remove_path(path: Path) -> None:
+    try:
+        if not path.exists():
+            return
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except OSError as exc:
+        logger.warning("Could not remove temporary path %s: %s", path, exc)
 
 
-def _analysis_path(statement_id: str) -> Path:
-    return settings.analysis_dir / statement_id / "analysis.json"
+def cleanup_paths(paths: Iterable[Path | str]) -> None:
+    for raw_path in paths:
+        if not raw_path:
+            continue
+        _remove_path(Path(raw_path))
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
+def _cleanup_stale_children(folder: Path, ttl_seconds: int) -> None:
+    if ttl_seconds <= 0 or not folder.exists():
+        return
+
+    cutoff = time.time() - ttl_seconds
+    for child in folder.iterdir():
+        if child.name == ".gitkeep":
+            continue
+        try:
+            if child.stat().st_mtime <= cutoff:
+                _remove_path(child)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("Could not inspect temporary path %s: %s", child, exc)
+
+
+def _is_expired(timestamp: str | None, ttl_seconds: int) -> bool:
+    if ttl_seconds <= 0 or not timestamp:
+        return False
+    try:
+        recorded_at = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    if recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - recorded_at.astimezone(timezone.utc)
+    return age.total_seconds() > ttl_seconds
+
+
+def _cleanup_session_stores() -> None:
+    with _STORE_LOCK:
+        expired_uploads = [
+            statement_id
+            for statement_id, metadata in _PENDING_UPLOADS.items()
+            if _is_expired(metadata.get("uploadedAt"), settings.temp_file_ttl_seconds)
+        ]
+        for statement_id in expired_uploads:
+            metadata = _PENDING_UPLOADS.pop(statement_id, None)
+            if metadata:
+                cleanup_paths((metadata.get("storedPath", ""),))
+
+        expired_results = [
+            statement_id
+            for statement_id, payload in _ANALYSIS_CACHE.items()
+            if _is_expired(payload.get("analyzedAt"), settings.analysis_cache_ttl_seconds)
+        ]
+        for statement_id in expired_results:
+            _ANALYSIS_CACHE.pop(statement_id, None)
+
+
+def cleanup_runtime_storage() -> None:
+    _cleanup_stale_children(settings.upload_dir, settings.temp_file_ttl_seconds)
+    _cleanup_stale_children(settings.email_statement_dir, settings.temp_file_ttl_seconds)
+    _cleanup_stale_children(settings.analysis_dir, settings.analysis_cache_ttl_seconds)
+    _cleanup_stale_children(settings.export_dir, settings.export_ttl_seconds)
+    _cleanup_session_stores()
+
+
+def _load_analysis(statement_id: str) -> dict[str, Any]:
+    cleanup_runtime_storage()
+    with _STORE_LOCK:
+        analysis = _ANALYSIS_CACHE.get(statement_id)
+    if not analysis:
         raise AnalysisError("Statement not found")
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return analysis
 
 
 def _df_records(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -157,6 +244,8 @@ def _summary_for(data: dict[str, pd.DataFrame]) -> dict[str, Any]:
 
 
 async def save_upload(file: UploadFile) -> dict[str, Any]:
+    cleanup_runtime_storage()
+
     original_name = file.filename or "statement"
     safe_name = _safe_filename(original_name)
     suffix = Path(safe_name).suffix.lower()
@@ -171,7 +260,11 @@ async def save_upload(file: UploadFile) -> dict[str, Any]:
 
     statement_id = uuid.uuid4().hex
     dest = settings.upload_dir / f"{statement_id}{suffix}"
-    dest.write_bytes(content)
+    try:
+        dest.write_bytes(content)
+    except OSError as exc:
+        cleanup_paths((dest,))
+        raise AnalysisError(f"Could not temporarily store upload: {exc}") from exc
 
     metadata = {
         "statementId": statement_id,
@@ -180,46 +273,71 @@ async def save_upload(file: UploadFile) -> dict[str, Any]:
         "status": "uploaded",
         "uploadedAt": _now(),
     }
-    _write_json(_metadata_path(statement_id), metadata)
-    return metadata
+
+    with _STORE_LOCK:
+        _PENDING_UPLOADS[statement_id] = metadata
+    return dict(metadata)
 
 
 def analyze_statement(statement_id: str) -> dict[str, Any]:
-    metadata = _load_json(_metadata_path(statement_id))
+    cleanup_runtime_storage()
+
+    with _STORE_LOCK:
+        cached = _ANALYSIS_CACHE.get(statement_id)
+        metadata = _PENDING_UPLOADS.get(statement_id)
+
+    if cached:
+        return {
+            "statementId": statement_id,
+            "status": cached.get("status", "analyzed"),
+            "summary": cached.get("summary", {}),
+        }
+
+    if not metadata:
+        raise AnalysisError("Statement not found")
+
     file_path = Path(metadata["storedPath"])
     if not file_path.exists():
+        with _STORE_LOCK:
+            _PENDING_UPLOADS.pop(statement_id, None)
         raise AnalysisError("Uploaded file is missing from storage")
 
     try:
         raw_df = load_statement(file_path)
         classified = process_transactions(raw_df)
+        summary = _summary_for(classified)
+        payload = {
+            **metadata,
+            "status": "analyzed",
+            "analyzedAt": _now(),
+            "storedPath": None,
+            "rawFileDeleted": True,
+            "summary": summary,
+            "transactions": {
+                category: _df_records(classified.get(category, pd.DataFrame()))
+                for category in TAX_CATEGORY_ORDER
+            },
+            "columns": {
+                category: list(classified.get(category, pd.DataFrame()).columns)
+                for category in TAX_CATEGORY_ORDER
+            },
+        }
     except SystemExit as exc:
         raise AnalysisError(str(exc)) from exc
     except Exception as exc:
         raise AnalysisError(f"Could not analyze statement: {exc}") from exc
+    finally:
+        cleanup_paths((file_path,))
+        with _STORE_LOCK:
+            _PENDING_UPLOADS.pop(statement_id, None)
 
-    summary = _summary_for(classified)
-    payload = {
-        **metadata,
-        "status": "analyzed",
-        "analyzedAt": _now(),
-        "summary": summary,
-        "transactions": {
-            category: _df_records(classified.get(category, pd.DataFrame()))
-            for category in TAX_CATEGORY_ORDER
-        },
-        "columns": {
-            category: list(classified.get(category, pd.DataFrame()).columns)
-            for category in TAX_CATEGORY_ORDER
-        },
-    }
-    _write_json(_analysis_path(statement_id), payload)
-    _write_json(_metadata_path(statement_id), {k: v for k, v in payload.items() if k not in {"transactions", "columns"}})
+    with _STORE_LOCK:
+        _ANALYSIS_CACHE[statement_id] = payload
     return {"statementId": statement_id, "status": "analyzed", "summary": summary}
 
 
 def get_summary(statement_id: str) -> dict[str, Any]:
-    analysis = _load_json(_analysis_path(statement_id))
+    analysis = _load_analysis(statement_id)
     return {
         "statementId": statement_id,
         "filename": analysis.get("filename"),
@@ -235,7 +353,7 @@ def get_transactions(
     review: bool | None = None,
     search: str | None = None,
 ) -> dict[str, Any]:
-    analysis = _load_json(_analysis_path(statement_id))
+    analysis = _load_analysis(statement_id)
     categories = [category] if category else TAX_CATEGORY_ORDER
     rows: list[dict[str, Any]] = []
 
@@ -261,37 +379,42 @@ def get_transactions(
     }
 
 
-def export_results(statement_id: str, category: str | None = None) -> Path:
-    analysis = _load_json(_analysis_path(statement_id))
-    out_dir = settings.export_dir / statement_id
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
+def export_results(statement_id: str, category: str | None = None) -> ExportArtifact:
+    analysis = _load_analysis(statement_id)
+    run_id = uuid.uuid4().hex
+    out_dir = settings.export_dir / f"{statement_id}-{run_id}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    zip_path: Path | None = None
 
-    data: dict[str, pd.DataFrame] = {}
-    if category and category != "ALL":
-        if category not in TAX_CATEGORY_ORDER:
-            raise AnalysisError(f"Unknown category '{category}'")
-        categories = [category]
-    else:
-        categories = TAX_CATEGORY_ORDER
+    try:
+        data: dict[str, pd.DataFrame] = {}
+        if category and category != "ALL":
+            if category not in TAX_CATEGORY_ORDER:
+                raise AnalysisError(f"Unknown category '{category}'")
+            categories = [category]
+        else:
+            categories = TAX_CATEGORY_ORDER
 
-    for cat in categories:
-        records = analysis.get("transactions", {}).get(cat, [])
-        columns = analysis.get("columns", {}).get(cat, [])
-        data[cat] = _records_df(records, columns)
+        for cat in categories:
+            records = analysis.get("transactions", {}).get(cat, [])
+            columns = analysis.get("columns", {}).get(cat, [])
+            data[cat] = _records_df(records, columns)
 
-    if category and category != "ALL":
-        filename = f"{category.lower()}_transactions.xlsx"
-        dest = out_dir / filename
-        data[category].to_excel(dest, index=False, engine="openpyxl")
-        return dest
+        if category and category != "ALL":
+            filename = f"{category.lower()}_transactions.xlsx"
+            dest = out_dir / filename
+            data[category].to_excel(dest, index=False, engine="openpyxl")
+            return ExportArtifact(path=dest, cleanup_paths=(out_dir,))
 
-    export_data(data, output_folder=out_dir, include_summary=True)
-    zip_path = settings.export_dir / f"{statement_id}_results.zip"
-    if zip_path.exists():
-        zip_path.unlink()
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file_path in out_dir.glob("*.xlsx"):
-            zf.write(file_path, file_path.name)
-    return zip_path
+        export_data(data, output_folder=out_dir, include_summary=True)
+        zip_path = settings.export_dir / f"{statement_id}_{run_id}_results.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for file_path in out_dir.glob("*.xlsx"):
+                zf.write(file_path, file_path.name)
+        return ExportArtifact(path=zip_path, cleanup_paths=(out_dir, zip_path))
+    except AnalysisError:
+        cleanup_paths((out_dir, zip_path) if zip_path else (out_dir,))
+        raise
+    except Exception as exc:
+        cleanup_paths((out_dir, zip_path) if zip_path else (out_dir,))
+        raise AnalysisError(f"Could not export results: {exc}") from exc

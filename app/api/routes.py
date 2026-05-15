@@ -1,9 +1,11 @@
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from app.services.analysis_service import (
     AnalysisError,
     analyze_statement,
+    cleanup_paths,
     export_results,
     get_summary,
     get_transactions,
@@ -68,13 +70,20 @@ def export_statement_results(
     category: str | None = Query(default="ALL"),
 ) -> FileResponse:
     try:
-        path = export_results(statement_id, category=category)
+        artifact = export_results(statement_id, category=category)
     except AnalysisError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    path = artifact.path
     media_type = (
         "application/zip"
         if path.suffix.lower() == ".zip"
         else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    return FileResponse(path, filename=path.name, media_type=media_type)
+    filename = f"{statement_id}_results.zip" if path.suffix.lower() == ".zip" else path.name
+    return FileResponse(
+        path,
+        filename=filename,
+        media_type=media_type,
+        background=BackgroundTask(cleanup_paths, artifact.cleanup_paths),
+    )
