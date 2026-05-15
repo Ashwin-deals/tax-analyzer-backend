@@ -10,6 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes import router
+from app.services.analysis_service import cleanup_runtime_storage
 
 
 app = FastAPI(title=settings.app_name)
@@ -26,6 +27,10 @@ from fastapi.staticfiles import StaticFiles
 
 app.include_router(router)
 
+
+@app.on_event("startup")
+def cleanup_temporary_storage() -> None:
+    cleanup_runtime_storage()
 
 if settings.frontend_dist.exists() and settings.frontend_dist.is_dir():
     app.mount("/", StaticFiles(directory=settings.frontend_dist, html=True), name="frontend")

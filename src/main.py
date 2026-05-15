@@ -24,6 +24,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src.exporter import export_data
+from src.email_fetcher import cleanup_downloaded_statements
 from src.loader import load_statement
 from src.processor import process_transactions
 from utils.constants import DEFAULT_INPUT_PATH, DEFAULT_OUTPUT_DIR
@@ -86,39 +87,42 @@ def main() -> None:
     input_path  = _resolve_path(args.input_file)
     output_path = _resolve_path(args.output_dir)
 
-    # ── Step 1: Load ──────────────────────────────────────────────────────────
-    logger.info("Step 1/3 — Loading data from: %s", input_path)
-    df = load_statement(input_path)
-    print(f"\n📂 Loaded {len(df):,} rows from '{input_path.name}'")
+    try:
+        # ── Step 1: Load ──────────────────────────────────────────────────────────
+        logger.info("Step 1/3 — Loading data from: %s", input_path)
+        df = load_statement(input_path)
+        print(f"\n📂 Loaded {len(df):,} rows from '{input_path.name}'")
 
-    # ── Step 2: Process / Classify ────────────────────────────────────────────
-    logger.info("Step 2/3 — Classifying transactions …")
-    result = process_transactions(df)
+        # ── Step 2: Process / Classify ────────────────────────────────────────────
+        logger.info("Step 2/3 — Classifying transactions …")
+        result = process_transactions(df)
 
-    gst_count          = len(result.get("GST", []))
-    possible_gst_count = len(result.get("POSSIBLE_GST", []))
-    tds_count          = len(result.get("TDS", []))
-    normal_count       = len(result.get("NORMAL", []))
+        gst_count          = len(result.get("GST", []))
+        possible_gst_count = len(result.get("POSSIBLE_GST", []))
+        tds_count          = len(result.get("TDS", []))
+        normal_count       = len(result.get("NORMAL", []))
 
-    # Calculate review needs across all categories
-    total_review = sum(df["REVIEW_RECOMMENDED"].sum() for df in result.values() if not df.empty)
+        # Calculate review needs across all categories
+        total_review = sum(df["REVIEW_RECOMMENDED"].sum() for df in result.values() if not df.empty)
 
-    print(f"\n🔍 Classification results:")
-    print(f"   • GST          : {gst_count:>5,} transactions")
-    print(f"   • POSSIBLE_GST : {possible_gst_count:>5,} transactions")
-    print(f"   • TDS          : {tds_count:>5,} transactions")
-    print(f"   • NORMAL       : {normal_count:>5,} transactions")
-    print(f"   {'─' * 30}")
-    print(f"   • TOTAL        : {gst_count + possible_gst_count + tds_count + normal_count:>5,} transactions")
-    print(f"\n🚩 Review required for {int(total_review):,} transactions.")
+        print(f"\n🔍 Classification results:")
+        print(f"   • GST          : {gst_count:>5,} transactions")
+        print(f"   • POSSIBLE_GST : {possible_gst_count:>5,} transactions")
+        print(f"   • TDS          : {tds_count:>5,} transactions")
+        print(f"   • NORMAL       : {normal_count:>5,} transactions")
+        print(f"   {'─' * 30}")
+        print(f"   • TOTAL        : {gst_count + possible_gst_count + tds_count + normal_count:>5,} transactions")
+        print(f"\n🚩 Review required for {int(total_review):,} transactions.")
 
-    # ── Step 3: Export ────────────────────────────────────────────────────────
-    logger.info("Step 3/3 — Exporting results to: %s", output_path)
-    export_data(
-        result,
-        output_folder=output_path,
-        include_summary=not args.no_summary,
-    )
+        # ── Step 3: Export ────────────────────────────────────────────────────────
+        logger.info("Step 3/3 — Exporting results to: %s", output_path)
+        export_data(
+            result,
+            output_folder=output_path,
+            include_summary=not args.no_summary,
+        )
+    finally:
+        _cleanup_email_statement_input(input_path)
 
 
 def _resolve_path(p: str) -> Path:
@@ -130,6 +134,15 @@ def _resolve_path(p: str) -> Path:
     if path.is_absolute():
         return path
     return (_project_root / path).resolve()
+
+
+def _cleanup_email_statement_input(input_path: Path) -> None:
+    email_dir = (_project_root / "data" / "email_statements").resolve()
+    try:
+        input_path.resolve().relative_to(email_dir)
+    except ValueError:
+        return
+    cleanup_downloaded_statements((input_path,))
 
 
 if __name__ == "__main__":

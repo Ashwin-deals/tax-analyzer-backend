@@ -15,7 +15,12 @@ Usage:
 import email
 import imaplib
 import logging
+import os
 import re
+import shutil
+import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from email.header import decode_header
 from pathlib import Path
@@ -26,6 +31,7 @@ logger = logging.getLogger(__name__)
 IMAP_HOST        = "imap.gmail.com"
 IMAP_PORT        = 993
 VALID_EXTENSIONS = {".xlsx", ".xls", ".csv", ".pdf"}
+TEMP_FILE_TTL_SECONDS = int(os.getenv("TEMP_FILE_TTL_SECONDS", "3600"))
 
 # Subject keywords used to identify statement emails (case-insensitive OR)
 SUBJECT_KEYWORDS = [
@@ -66,6 +72,7 @@ def fetch_statements(
         GmailFetchError: on connection / authentication failure.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_stale_downloads(output_dir)
     downloaded: list[Path] = []
 
     try:
@@ -93,6 +100,58 @@ def fetch_statements(
 
     logger.info("Total attachments downloaded: %d", len(downloaded))
     return downloaded
+
+
+@contextmanager
+def temporary_fetch_statements(
+    email_address: str,
+    app_password: str,
+    output_dir: Path,
+    max_emails: int = 20,
+) -> Iterator[list[Path]]:
+    """
+    Fetch statement attachments for immediate processing and delete them after use.
+    """
+    paths = fetch_statements(email_address, app_password, output_dir, max_emails=max_emails)
+    try:
+        yield paths
+    finally:
+        cleanup_downloaded_statements(paths)
+
+
+def cleanup_downloaded_statements(paths: Iterable[Path | str]) -> None:
+    for raw_path in paths:
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+                logger.info("Removed temporary email statement: %s", path.name)
+        except OSError as exc:
+            logger.warning("Could not remove temporary email statement %s: %s", path, exc)
+
+
+def cleanup_stale_downloads(output_dir: Path, ttl_seconds: int = TEMP_FILE_TTL_SECONDS) -> None:
+    if ttl_seconds <= 0 or not output_dir.exists():
+        return
+
+    cutoff = time.time() - ttl_seconds
+    for child in output_dir.iterdir():
+        if child.name == ".gitkeep":
+            continue
+        try:
+            if child.stat().st_mtime > cutoff:
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+            logger.info("Removed stale email statement temp path: %s", child)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("Could not remove stale email statement temp path %s: %s", child, exc)
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────

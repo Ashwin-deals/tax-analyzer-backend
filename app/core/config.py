@@ -23,7 +23,11 @@ class Settings:
     analysis_dir: Path = Path(os.getenv("ANALYSIS_DIR", BACKEND_ROOT / "data" / "output" / "api"))
     export_dir: Path = Path(os.getenv("EXPORT_DIR", BACKEND_ROOT / "data" / "output" / "exports"))
     frontend_dist: Path = Path(os.getenv("FRONTEND_DIST", BACKEND_ROOT / "dist"))
+    email_statement_dir: Path = Path(os.getenv("EMAIL_STATEMENT_DIR", BACKEND_ROOT / "data" / "email_statements"))
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "50"))
+    temp_file_ttl_seconds: int = int(os.getenv("TEMP_FILE_TTL_SECONDS", "3600"))
+    export_ttl_seconds: int = int(os.getenv("EXPORT_TTL_SECONDS", "3600"))
+    analysis_cache_ttl_seconds: int = int(os.getenv("ANALYSIS_CACHE_TTL_SECONDS", "43200"))
 
     def __post_init__(self):
         object.__setattr__(
@@ -34,6 +38,7 @@ class Settings:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.analysis_dir.mkdir(parents=True, exist_ok=True)
         self.export_dir.mkdir(parents=True, exist_ok=True)
+        self.email_statement_dir.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()
