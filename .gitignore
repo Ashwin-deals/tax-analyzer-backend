@@ -4,4 +4,4 @@ __pycache__/
 venv/
 uploads/
 node_modules/
-.env.env
+.env
