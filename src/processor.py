@@ -18,9 +18,31 @@ from utils.constants import (
     TAX_CATEGORY_ORDER,
     INTERNAL_COLS,
 )
+from utils.classification_rules import apply_display_classification_guard
 from src.ml_pipeline import append_to_training_data
 
 logger = logging.getLogger(__name__)
+
+
+_DEBUG_NARRATION_COLUMNS = (
+    "_description",
+    "particulars",
+    "Particulars",
+    "PARTICULARS",
+    "narration",
+    "Narration",
+    "NARRATION",
+    "remarks",
+    "Remarks",
+    "REMARKS",
+    "description",
+    "Description",
+    "DESCRIPTION",
+    "transaction_remarks",
+    "Transaction Remarks",
+    "TRANSACTION REMARKS",
+    "_raw_row_text",
+)
 
 
 def process_transactions(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -47,6 +69,25 @@ def process_transactions(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     df["REVIEW_RECOMMENDED"] = [r.needs_review        for r in score_results]
     df["ML_ASSIST"]          = [f"{r.ml_model_confidence:.2%}" if r.ml_assist_used else "N/A" for r in score_results]
     df["REASON"]             = [r.reason              for r in score_results]
+
+    # Final deterministic guard, applied after heuristic/ML scoring and before
+    # training export, cache storage, MongoDB writes, API responses, or exports.
+    guarded_rows = [
+        apply_display_classification_guard(row.to_dict(), final_stage=True)
+        for _, row in df.iterrows()
+    ]
+    _log_pdf_classification_debug(df, guarded_rows)
+    for col in (
+        "TAX_CATEGORY",
+        "CONFIDENCE",
+        "REVIEW_RECOMMENDED",
+        "REASON",
+        "normalized_particulars",
+        "classification_source",
+        "final_override_applied",
+        "statement_id",
+    ):
+        df[col] = [row.get(col) for row in guarded_rows]
 
     # ── Export to ML Training Dataset ─────────────────────────────────────────
     # We do this BEFORE dropping internal alias columns because ml_pipeline needs them
@@ -75,6 +116,29 @@ def process_transactions(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         len(result[CATEGORY_TDS]), len(result[CATEGORY_NORMAL]),
     )
     return result
+
+
+def _log_pdf_classification_debug(df: pd.DataFrame, guarded_rows: list[dict]) -> None:
+    for index, (_, original_row) in enumerate(df.iterrows()):
+        row_dict = original_row.to_dict()
+        if str(row_dict.get("_source_format") or "").lower() != "pdf" and not row_dict.get("_raw_row_text"):
+            continue
+        narration_fields = {
+            key: row_dict.get(key)
+            for key in _DEBUG_NARRATION_COLUMNS
+            if key in row_dict and pd.notna(row_dict.get(key)) and str(row_dict.get(key)).strip()
+        }
+        guarded = guarded_rows[index]
+        logger.info(
+            "FinScan PDF classification debug row=%s raw_extracted_row=%s narration_fields=%s normalized_narration=%s tax_category=%s confidence=%s review_recommended=%s",
+            row_dict.get("_pdf_row_index", index + 1),
+            row_dict.get("_raw_extracted_row") or row_dict.get("_raw_row_text") or row_dict,
+            narration_fields,
+            guarded.get("normalized_particulars"),
+            guarded.get("TAX_CATEGORY"),
+            guarded.get("CONFIDENCE"),
+            guarded.get("REVIEW_RECOMMENDED"),
+        )
 
 
 def _filter(df: pd.DataFrame, category: str) -> pd.DataFrame:

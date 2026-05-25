@@ -72,8 +72,8 @@ SCORE_TDS_QUARTER_END    = 1    # Reduced: timing alone can't elevate category
 # ── GST signal weights ────────────────────────────────────────────────────────
 SCORE_GST_KEYWORD        = 10
 SCORE_GST_GSTIN_PATTERN  = 9
-SCORE_GST_WEAK_HINT      = 4    # Weak hint (invoice, settlement, accounting)
-SCORE_GST_GATEWAY        = 3    # Gateway/commercial infra -> POSSIBLE_GST when tax is ambiguous
+SCORE_GST_WEAK_HINT      = 4    # Weak hint (invoice/accounting/expense context)
+SCORE_GST_GATEWAY        = 3    # Gateway fee/charge context -> POSSIBLE_GST when ambiguous
 SCORE_GST_CMS_CARDPMT    = 2    # Card/CMS is behavioral context, not a final tax category
 SCORE_GST_UPI_DEBIT      = 1    # Reduced: UPI debit alone is insufficient for tax ambiguity
 SCORE_GST_NONROUND_AMT   = 2
@@ -196,24 +196,28 @@ GST_KEYWORDS = [
 
 # ── GST weak hints (→ POSSIBLE_GST) ───────────────────────────────────────────
 GST_WEAK_HINTS = [
-    "tax invoice",      
-    "proforma invoice", "e-invoice", "einvoice",
-    "invoice", "bill payment", "settlement", "accounting", "expense"
+    "invoice", "bill", "e-invoice", "einvoice"
 ]
 
 # ── Service/vendor semantic intelligence (→ FLOW_TYPE BUSINESS + POSSIBLE_GST) ─
 SERVICE_VENDOR_KEYWORDS = [
     "service", "services", "service charge", "maintenance", "repair",
     "engineering", "engineerin", "consulting", "consultancy", "consultant",
-    "professional fee", "professional services", "retainer", "audit",
+    "professional fee", "professional service", "professional services", "retainer", "audit",
     "accounting", "bookkeeping", "legal services", "ca services",
     "software", "software license", "license fee", "saas",
     "cloud", "hosting", "server", "domain", "it support", "support fee",
+    "subscription", "business service", "business services",
+    "vendor service", "vendor services", "merchant service", "merchant services",
+    "platform fee", "platform charges", "gateway fee", "gateway charges",
+    "payment gateway fee", "payment gateway charges",
+    "processing fee", "merchant fee", "bank charges", "mdr", "msf",
+    "razorpay fee", "razorpay charges", "commission", "commission charges",
     "vendor payment", "supplier payment", "contractor", "freelancer",
     "agency", "logistics", "courier", "procurement",
 ]
 
-# ── Merchant / payment-gateway keywords (→ GST) ───────────────────────────────
+# ── Merchant / payment-gateway keywords (→ GST only with fee/tax context) ─────
 MERCHANT_KEYWORDS = [
     "card pmt", "card payment", "credit card pmt", "debit card pmt",
     "point of sale", "cms_", "neft/gst", "rtgs/gst",
