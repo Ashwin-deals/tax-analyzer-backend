@@ -201,6 +201,51 @@ GST_WEAK_HINTS = [
     "invoice", "bill payment", "settlement", "accounting", "expense"
 ]
 
+# Business purchase/SaaS/POS patterns that should be treated as high-confidence
+# GST-bearing transactions even when the narration does not literally contain
+# "GST". These represent vendors or document types that normally issue
+# GST-compliant invoices in India.
+GST_HIGH_CONFIDENCE_PATTERNS = [
+    # Invoice / purchase order / supplier payments
+    (r"\binvoice\b", True),
+    (r"\bproforma invoice\b", True),
+    (r"\bpayment against invoice\b", True),
+    (r"\binvoice settlement\b", True),
+    (r"\bpurchase order\b", True),
+    (r"\bsupplier advance\b", True),
+    (r"\boffice supplies\b", True),
+    (r"\bstationery vendor\b", True),
+
+    # Software and digital subscriptions
+    (r"\badobe creative cloud\b", True),
+    (r"\blinkedin premium\b", True),
+    (r"\bamazon prime\b", True),
+    (r"\bhotstar\b", True),
+    (r"\bdisney plus\b", True),
+    (r"\bspotify\b", True),
+    (r"\bnetflix\b", True),
+    (r"\bapple icloud\b", True),
+    (r"\bicloud storage\b", True),
+    (r"\b(subscription|saas|software).*\bindia\b", True),
+
+    # E-commerce and retail POS
+    (r"\bpos purchase\b", True),
+    (r"\bcroma\b", True),
+    (r"\bflipkart\b", True),
+    (r"\bbigbasket\b", True),
+    (r"\breliance fresh\b", True),
+    (r"\belectronics store\b", True),
+
+    # Business operations and utilities
+    (r"\brazorpay\b.*\b(escrow|payment aggregator|settlement)\b", True),
+    (r"\b(payment aggregator|merchant settlement)\b", True),
+    (r"\bcredit card\b.*\bbill\b", True),
+    (r"\bfuel station\b", True),
+    (r"\biocl\b", True),
+    (r"\bbilldesk\b.*\b(electricity|utility)\b", True),
+    (r"\butility electricity\b", True),
+]
+
 # ── Service/vendor semantic intelligence (→ FLOW_TYPE BUSINESS + POSSIBLE_GST) ─
 SERVICE_VENDOR_KEYWORDS = [
     "service", "services", "service charge", "maintenance", "repair",

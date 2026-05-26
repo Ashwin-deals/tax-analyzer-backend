@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+venv/
+uploads/
+node_modules/
+.env
+data/auth_store.json
+data/auth_store.tmp
+data/statement_store.json
+data/statement_store.tmp
+data/statements/

@@ -24,6 +24,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from email.header import decode_header
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,22 @@ class GmailFetchError(Exception):
     """Raised when Gmail connection or authentication fails."""
 
 
+def test_connection(email_address: str, app_password: str) -> None:
+    try:
+        conn = _connect(email_address, app_password)
+    except imaplib.IMAP4.error as exc:
+        raise GmailFetchError(
+            f"Gmail login failed for {email_address}. "
+            "Make sure IMAP is enabled and you are using an App Password, "
+            f"not your regular Gmail password. Detail: {exc}"
+        ) from exc
+    finally:
+        try:
+            conn.logout()  # type: ignore[has-type]
+        except Exception:
+            pass
+
+
 def fetch_statements(
     email_address: str,
     app_password: str,
@@ -71,9 +88,22 @@ def fetch_statements(
     Raises:
         GmailFetchError: on connection / authentication failure.
     """
+    attachments = fetch_statement_attachments(email_address, app_password, output_dir, max_emails=max_emails)
+    downloaded = [Path(item["path"]) for item in attachments]
+    mark_messages_seen(email_address, app_password, [str(item["message_id"]) for item in attachments])
+    logger.info("Total attachments downloaded: %d", len(downloaded))
+    return downloaded
+
+
+def fetch_statement_attachments(
+    email_address: str,
+    app_password: str,
+    output_dir: Path,
+    max_emails: int = 20,
+) -> list[dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cleanup_stale_downloads(output_dir)
-    downloaded: list[Path] = []
+    downloaded: list[dict[str, Any]] = []
 
     try:
         conn = _connect(email_address, app_password)
@@ -90,7 +120,7 @@ def fetch_statements(
 
         for mid in msg_ids:
             paths = _download_attachments(conn, mid, output_dir)
-            downloaded.extend(paths)
+            downloaded.extend({"message_id": mid.decode("ascii", errors="ignore"), "path": path} for path in paths)
 
     finally:
         try:
@@ -100,6 +130,25 @@ def fetch_statements(
 
     logger.info("Total attachments downloaded: %d", len(downloaded))
     return downloaded
+
+
+def mark_messages_seen(email_address: str, app_password: str, message_ids: Iterable[str | bytes]) -> None:
+    ids = sorted({str(raw_id.decode("ascii") if isinstance(raw_id, bytes) else raw_id).strip() for raw_id in message_ids if raw_id})
+    if not ids:
+        return
+    try:
+        conn = _connect(email_address, app_password)
+    except imaplib.IMAP4.error as exc:
+        logger.warning("Could not reconnect to mark Gmail messages read: %s", exc)
+        return
+    try:
+        for msg_id in ids:
+            conn.store(msg_id, "+FLAGS", r"(\Seen)")
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
 
 
 @contextmanager
@@ -234,7 +283,7 @@ def _download_attachments(
     and write them to output_dir. Returns list of saved Paths.
     """
     try:
-        _, msg_data = conn.fetch(msg_id, "(RFC822)")
+        _, msg_data = conn.fetch(msg_id, "(BODY.PEEK[])")
     except imaplib.IMAP4.error as exc:
         logger.warning("Failed to fetch email ID %s: %s", msg_id, exc)
         return []

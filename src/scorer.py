@@ -40,7 +40,8 @@ from utils.constants import (
     AMOUNT_FLAG_ABOVE, AMOUNT_IGNORE_BELOW,
     CATEGORY_GST, CATEGORY_NORMAL, CATEGORY_TDS, CATEGORY_POSSIBLE_GST,
     COMPANY_SUFFIX_PENALTIES,
-    GST_KEYWORDS, GST_WEAK_HINTS, MERCHANT_KEYWORDS, NEGATIVE_KEYWORDS, SERVICE_VENDOR_KEYWORDS,
+    GST_HIGH_CONFIDENCE_PATTERNS, GST_KEYWORDS, GST_WEAK_HINTS, MERCHANT_KEYWORDS,
+    NEGATIVE_KEYWORDS, SERVICE_VENDOR_KEYWORDS,
     NORMAL_OVERRIDE_KEYWORDS,
     INTERNAL_CREDIT_COL, INTERNAL_DATE_COL,
     INTERNAL_DEBIT_COL, INTERNAL_DESCRIPTION_COL,
@@ -97,6 +98,11 @@ _COMPANY_SUFFIX_PATTERNS: list[tuple[re.Pattern, int]] = [
 _NORMAL_OVERRIDE_PATTERNS: list[re.Pattern] = [
     re.compile(p if is_re else re.escape(p), re.IGNORECASE)
     for p, is_re in NORMAL_OVERRIDE_KEYWORDS
+]
+
+_HIGH_CONFIDENCE_GST_PATTERNS: list[tuple[str, re.Pattern]] = [
+    (pattern, re.compile(pattern if is_re else re.escape(pattern), re.IGNORECASE))
+    for pattern, is_re in GST_HIGH_CONFIDENCE_PATTERNS
 ]
 
 # Strong GST keywords that block TDS priority and (when present) bypass
@@ -259,6 +265,19 @@ def score_transaction(row: pd.Series) -> ScoreResult:
     has_strong_tds = _has_explicit_tds
     result.classification_mode = "EXPLICIT" if (has_strong_gst or has_strong_tds) else "HEURISTIC"
     result.explicit_rule = has_strong_gst or has_strong_tds
+
+    # ── High-confidence business GST rules ───────────────────────────────────
+    # These patterns are not literal GST text, but they represent invoice-backed
+    # purchases, SaaS subscriptions, POS retail purchases, and business utility
+    # payments that should be treated as GST-bearing instead of POSSIBLE_GST.
+    if not has_strong_tds:
+        business_gst_pattern = _high_confidence_gst_match(text)
+        if business_gst_pattern:
+            result.category = CATEGORY_GST
+            result.classification_mode = "BUSINESS_GST_RULE"
+            result.explicit_rule = True
+            dbg.append(f"High-confidence business GST rule matched: {business_gst_pattern}")
+            return _finalise(result, debit, credit, amount, dbg, date)
 
     # ── NORMAL override: utility / statutory payments ─────────────────────────
     # If a utility keyword matches AND no strong GST/TDS keyword is present,
@@ -737,6 +756,13 @@ def _is_quarter_end(date_val) -> bool:
 
 def _has_service_vendor_signal(text: str) -> bool:
     return any(signal in text for signal in _SERVICE_VENDOR_SET)
+
+
+def _high_confidence_gst_match(text: str) -> str | None:
+    for label, pattern in _HIGH_CONFIDENCE_GST_PATTERNS:
+        if pattern.search(text):
+            return label
+    return None
 
 
 def _vendor_pattern_matches(pattern: str, text: str) -> bool:
